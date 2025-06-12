@@ -3,6 +3,7 @@ import sqlite3
 import numpy as np
 import os
 from math import radians, sin, cos, sqrt, atan2
+import swifter
 
 # Define paths
 project_dir = os.path.dirname(os.path.dirname(__file__))
@@ -57,13 +58,28 @@ conn.close()
 # Load the world cities dataset
 cities_df = pd.read_csv(cities_path)
 
-# Standardize city and country names for matching
+# Normalize city and country names
 df['Destination_City'] = df['Destination_City'].str.lower().str.strip()
 df['Destination_Country'] = df['Destination_Country'].str.lower().str.strip()
 cities_df['city_ascii'] = cities_df['city_ascii'].str.lower().str.strip()
 cities_df['country'] = cities_df['country'].str.lower().str.strip()
 
+# Map country name variations (e.g., "ee. uu." to "usa", "méxico" to "mexico")
+country_mapping = {
+    'ee. uu.': 'usa',
+    'méxico': 'mexico',
+    'alemania': 'germany',
+    'república dominicana': 'dominican republic',
+    'perú': 'peru',
+    'brasil': 'brazil',
+    'puerto rico': 'puerto rico',
+    'el salvador': 'el salvador'
+}
+df['Destination_Country'] = df['Destination_Country'].replace(country_mapping)
+cities_df['country'] = cities_df['country'].replace(country_mapping)
+
 # Create a city-country key for merging
+print("Merging city-country data...")
 df['City_Country'] = df['Destination_City'] + ', ' + df['Destination_Country']
 cities_df['City_Country'] = cities_df['city_ascii'] + ', ' + cities_df['country']
 
@@ -77,21 +93,40 @@ df = df.merge(
 # Rename columns
 df = df.rename(columns={'lat': 'Destination_Latitude', 'lng': 'Destination_Longitude'})
 
-# Drop rows where coordinates are missing
+# Log the number of missing coordinates
+missing_coords = df['Destination_Latitude'].isna().sum()
+print(f"Number of rows with missing coordinates: {missing_coords}")
+print(f"Percentage of rows with missing coordinates: {missing_coords / len(df) * 100:.2f}%")
+
+# Drop rows with missing coordinates
 df = df.dropna(subset=['Destination_Latitude', 'Destination_Longitude'])
 
-# Calculate distances
-df['Distance_km'] = df.apply(
+# Calculate distances in parallel
+print("Calculating distances...")
+df['Distance_km'] = df.swifter.apply(
     lambda row: haversine(
         row['Origin_Latitude'], row['Origin_Longitude'],
         row['Destination_Latitude'], row['Destination_Longitude']
     ), axis=1
 )
 
-# Calculate emissions
-df['Carbon_Emissions_kg'] = df.apply(
+# Handle outliers in Distance_km (cap at 20,000 km, roughly the max possible distance on Earth)
+distance_cap = 20000
+outliers_distance = df[df['Distance_km'] > distance_cap]
+print(f"Number of distance outliers (> {distance_cap} km): {len(outliers_distance)}")
+df.loc[df['Distance_km'] > distance_cap, 'Distance_km'] = distance_cap
+
+# Calculate emissions in parallel
+print("Calculating carbon emissions...")
+df['Carbon_Emissions_kg'] = df.swifter.apply(
     lambda row: row['Distance_km'] * emission_factors.get(row['Shipping_Mode'], 0.1), axis=1
 )
+
+# Handle outliers in Carbon_Emissions_kg (cap at 99th percentile)
+emissions_cap = df['Carbon_Emissions_kg'].quantile(0.99)
+outliers_emissions = df[df['Carbon_Emissions_kg'] > emissions_cap]
+print(f"Number of emissions outliers (> {emissions_cap:.2f} kg CO2e): {len(outliers_emissions)}")
+df.loc[df['Carbon_Emissions_kg'] > emissions_cap, 'Carbon_Emissions_kg'] = emissions_cap
 
 # Drop temporary column
 df = df.drop(columns=['City_Country'])
@@ -100,3 +135,4 @@ df = df.drop(columns=['City_Country'])
 df.to_csv(output_csv, index=False)
 
 print(f"Processed data saved to {output_csv}")
+print(f"Total rows after processing: {len(df)}")
