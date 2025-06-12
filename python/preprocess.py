@@ -55,12 +55,14 @@ WHERE "Delivery Status" != 'Shipping canceled'
 df = pd.read_sql_query(query, conn)
 conn.close()
 
-# Load the world cities dataset
-cities_df = pd.read_csv(cities_path)
+# Print initial row count
+print(f"Initial number of rows: {len(df)}")
 
 # Normalize city and country names
 df['Destination_City'] = df['Destination_City'].str.lower().str.strip()
 df['Destination_Country'] = df['Destination_Country'].str.lower().str.strip()
+df['Origin_Country'] = df['Origin_Country'].str.lower().str.strip()
+cities_df = pd.read_csv(cities_path)
 cities_df['city_ascii'] = cities_df['city_ascii'].str.lower().str.strip()
 cities_df['country'] = cities_df['country'].str.lower().str.strip()
 
@@ -76,6 +78,7 @@ country_mapping = {
     'el salvador': 'el salvador'
 }
 df['Destination_Country'] = df['Destination_Country'].replace(country_mapping)
+df['Origin_Country'] = df['Origin_Country'].replace(country_mapping)
 cities_df['country'] = cities_df['country'].replace(country_mapping)
 
 # Create a city-country key for merging
@@ -116,11 +119,16 @@ outliers_distance = df[df['Distance_km'] > distance_cap]
 print(f"Number of distance outliers (> {distance_cap} km): {len(outliers_distance)}")
 df.loc[df['Distance_km'] > distance_cap, 'Distance_km'] = distance_cap
 
-# Calculate emissions in parallel
-print("Calculating carbon emissions...")
+# Calculate emissions in parallel with added noise
+print("Calculating carbon emissions with noise...")
+# Base emissions
 df['Carbon_Emissions_kg'] = df.swifter.apply(
     lambda row: row['Distance_km'] * emission_factors.get(row['Shipping_Mode'], 0.1), axis=1
 )
+# Add random noise (±10% of the base emissions)
+np.random.seed(42)  # For reproducibility
+noise = np.random.uniform(low=-0.3, high=0.3, size=len(df))
+df['Carbon_Emissions_kg'] = df['Carbon_Emissions_kg'] * (1 + noise)
 
 # Handle outliers in Carbon_Emissions_kg (cap at 99th percentile)
 emissions_cap = df['Carbon_Emissions_kg'].quantile(0.99)
